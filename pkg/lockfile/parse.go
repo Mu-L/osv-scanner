@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"golang.org/x/exp/maps"
 )
 
 func FindParser(pathToLockfile string, parseAs string) (PackageDetailsParser, string) {
@@ -16,22 +18,26 @@ func FindParser(pathToLockfile string, parseAs string) (PackageDetailsParser, st
 	return parsers[parseAs], parseAs
 }
 
-//nolint:gochecknoglobals // this is an optimisation and read-only
+// this is an optimisation and read-only
 var parsers = map[string]PackageDetailsParser{
 	"buildscript-gradle.lockfile": ParseGradleLock,
 	"Cargo.lock":                  ParseCargoLock,
 	"composer.lock":               ParseComposerLock,
+	"conan.lock":                  ParseConanLock,
 	"Gemfile.lock":                ParseGemfileLock,
 	"go.mod":                      ParseGoLock,
+	"verification-metadata.xml":   ParseGradleVerificationMetadata,
 	"gradle.lockfile":             ParseGradleLock,
 	"mix.lock":                    ParseMixLock,
 	"Pipfile.lock":                ParsePipenvLock,
 	"package-lock.json":           ParseNpmLock,
 	"packages.lock.json":          ParseNuGetLock,
+	"pdm.lock":                    ParsePdmLock,
 	"pnpm-lock.yaml":              ParsePnpmLock,
 	"poetry.lock":                 ParsePoetryLock,
 	"pom.xml":                     ParseMavenLock,
 	"pubspec.lock":                ParsePubspecLock,
+	"renv.lock":                   ParseRenvLock,
 	"requirements.txt":            ParseRequirementsTxt,
 	"yarn.lock":                   ParseYarnLock,
 }
@@ -54,20 +60,6 @@ var ErrParserNotFound = errors.New("could not determine parser")
 
 type Packages []PackageDetails
 
-func toSliceOfEcosystems(ecosystemsMap map[Ecosystem]struct{}) []Ecosystem {
-	ecosystems := make([]Ecosystem, 0, len(ecosystemsMap))
-
-	for ecosystem := range ecosystemsMap {
-		if ecosystem == "" {
-			continue
-		}
-
-		ecosystems = append(ecosystems, ecosystem)
-	}
-
-	return ecosystems
-}
-
 func (ps Packages) Ecosystems() []Ecosystem {
 	ecosystems := make(map[Ecosystem]struct{})
 
@@ -75,7 +67,7 @@ func (ps Packages) Ecosystems() []Ecosystem {
 		ecosystems[pkg.Ecosystem] = struct{}{}
 	}
 
-	slicedEcosystems := toSliceOfEcosystems(ecosystems)
+	slicedEcosystems := maps.Keys(ecosystems)
 
 	sort.Slice(slicedEcosystems, func(i, j int) bool {
 		return slicedEcosystems[i] < slicedEcosystems[j]
@@ -125,10 +117,18 @@ func Parse(pathToLockfile string, parseAs string) (Lockfile, error) {
 	parser, parsedAs := FindParser(pathToLockfile, parseAs)
 
 	if parser == nil {
+		if parseAs != "" {
+			return Lockfile{}, fmt.Errorf("%w, requested %s", ErrParserNotFound, parseAs)
+		}
+
 		return Lockfile{}, fmt.Errorf("%w for %s", ErrParserNotFound, pathToLockfile)
 	}
 
 	packages, err := parser(pathToLockfile)
+
+	if err != nil && parseAs != "" {
+		err = fmt.Errorf("(extracting as %s) %w", parsedAs, err)
+	}
 
 	sort.Slice(packages, func(i, j int) bool {
 		if packages[i].Name == packages[j].Name {

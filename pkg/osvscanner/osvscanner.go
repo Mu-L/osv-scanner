@@ -1,351 +1,455 @@
 package osvscanner
 
 import (
-	"bufio"
-	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
+	"time"
 
-	"github.com/google/osv-scanner/internal/osv"
-	"github.com/google/osv-scanner/internal/output"
-	"github.com/google/osv-scanner/internal/sbom"
-	"github.com/google/osv-scanner/pkg/config"
-	"github.com/google/osv-scanner/pkg/lockfile"
-	"github.com/google/osv-scanner/pkg/models"
+	scalibr "github.com/google/osv-scalibr"
+	"github.com/google/osv-scalibr/artifact/image/layerscanning/image"
+	"github.com/google/osv-scalibr/clients/datasource"
+	"github.com/google/osv-scalibr/clients/resolution"
+	"github.com/google/osv-scalibr/extractor"
+	"github.com/google/osv-scanner/v2/internal/clients/clientimpl/baseimagematcher"
+	"github.com/google/osv-scanner/v2/internal/clients/clientimpl/licensematcher"
+	"github.com/google/osv-scanner/v2/internal/clients/clientimpl/localmatcher"
+	"github.com/google/osv-scanner/v2/internal/clients/clientimpl/osvmatcher"
+	"github.com/google/osv-scanner/v2/internal/clients/clientinterfaces"
+	"github.com/google/osv-scanner/v2/internal/config"
+	"github.com/google/osv-scanner/v2/internal/depsdev"
+	"github.com/google/osv-scanner/v2/internal/imodels"
+	"github.com/google/osv-scanner/v2/internal/imodels/results"
+	"github.com/google/osv-scanner/v2/internal/osvdev"
+	"github.com/google/osv-scanner/v2/internal/output"
+	"github.com/google/osv-scanner/v2/internal/version"
+	"github.com/google/osv-scanner/v2/pkg/models"
+	"github.com/google/osv-scanner/v2/pkg/osvscanner/internal/imagehelpers"
+	"github.com/google/osv-scanner/v2/pkg/osvscanner/internal/scanners"
+	"github.com/google/osv-scanner/v2/pkg/reporter"
+	"github.com/ossf/osv-schema/bindings/go/osvschema"
 )
 
 type ScannerActions struct {
-	LockfilePaths        []string
-	SBOMPaths            []string
-	DirectoryPaths       []string
-	GitCommits           []string
-	Recursive            bool
-	SkipGit              bool
-	DockerContainerNames []string
-	ConfigOverridePath   string
+	LockfilePaths      []string
+	SBOMPaths          []string
+	DirectoryPaths     []string
+	GitCommits         []string
+	Recursive          bool
+	IncludeGitRoot     bool
+	NoIgnore           bool
+	Image              string
+	IsImageArchive     bool
+	ConfigOverridePath string
+	CallAnalysisStates map[string]bool
+
+	ExperimentalScannerActions
 }
 
-// Error for when no packages is found during a scan.
-var NoPackagesFoundErr = errors.New("no packages found in scan")
-var VulnerabilitiesFoundErr = errors.New("vulnerabilities found")
+type ExperimentalScannerActions struct {
+	CompareOffline        bool
+	DownloadDatabases     bool
+	ShowAllPackages       bool
+	ScanLicensesSummary   bool
+	ScanLicensesAllowlist []string
 
-// scanDir walks through the given directory to try to find any relevant files
-// These include:
-//   - Any lockfiles with scanLockfile
-//   - Any SBOM files with scanSBOMFile
-//   - Any git repositories with scanGit
-func scanDir(r *output.Reporter, query *osv.BatchedQuery, dir string, skipGit bool, recursive bool) error {
-	root := true
-	return filepath.WalkDir(dir, func(path string, info os.DirEntry, err error) error {
+	LocalDBPath string
+	TransitiveScanningActions
+}
+
+type TransitiveScanningActions struct {
+	Disabled         bool
+	NativeDataSource bool
+	MavenRegistry    string
+}
+
+type ExternalAccessors struct {
+	// Matchers
+	VulnMatcher      clientinterfaces.VulnerabilityMatcher
+	LicenseMatcher   clientinterfaces.LicenseMatcher
+	BaseImageMatcher clientinterfaces.BaseImageMatcher
+
+	// Required for pomxmlnet Extractor
+	MavenRegistryAPIClient *datasource.MavenRegistryAPIClient
+	// Required for vendored Extractor
+	OSVDevClient *osvdev.OSVClient
+
+	// DependencyClients is a map of implementations of DependencyClient
+	// for each ecosystem, the following is currently implemented:
+	// - [osvschema.EcosystemMaven] required for pomxmlnet Extractor
+	DependencyClients map[osvschema.Ecosystem]resolution.DependencyClient
+}
+
+// ErrNoPackagesFound for when no packages are found during a scan.
+var ErrNoPackagesFound = errors.New("no packages found in scan")
+
+// ErrVulnerabilitiesFound includes both vulnerabilities being found or license violations being found,
+// however, will not be raised if only uncalled vulnerabilities are found.
+var ErrVulnerabilitiesFound = errors.New("vulnerabilities found")
+
+// ErrAPIFailed describes errors related to querying API endpoints.
+// TODO(v2): Actually use this error
+var ErrAPIFailed = errors.New("API query failed")
+
+func initializeExternalAccessors(r reporter.Reporter, actions ScannerActions) (ExternalAccessors, error) {
+	externalAccessors := ExternalAccessors{
+		DependencyClients: map[osvschema.Ecosystem]resolution.DependencyClient{},
+	}
+	var err error
+
+	// Offline Mode
+	// ------------
+	if actions.CompareOffline {
+		// --- Vulnerability Matcher ---
+		externalAccessors.VulnMatcher, err = localmatcher.NewLocalMatcher(r, actions.LocalDBPath, "osv-scanner_scan/"+version.OSVVersion, actions.DownloadDatabases)
 		if err != nil {
-			r.PrintText(fmt.Sprintf("Failed to walk %s: %v\n", path, err))
-			return err
+			return ExternalAccessors{}, err
 		}
-		path, err = filepath.Abs(path)
+
+		return externalAccessors, nil
+	}
+
+	// Online Mode
+	// -----------
+	// --- Vulnerability Matcher ---
+	externalAccessors.VulnMatcher = &osvmatcher.OSVMatcher{
+		Client:              *osvdev.DefaultClient(),
+		InitialQueryTimeout: 5 * time.Minute,
+	}
+
+	// --- License Matcher ---
+	if len(actions.ScanLicensesAllowlist) > 0 || actions.ScanLicensesSummary {
+		depsDevAPIClient, err := datasource.NewCachedInsightsClient(depsdev.DepsdevAPI, "osv-scanner_scan/"+version.OSVVersion)
 		if err != nil {
-			r.PrintError(fmt.Sprintf("Failed to walk path %s\n", err))
-			return err
+			return ExternalAccessors{}, err
 		}
 
-		if !skipGit && info.IsDir() && info.Name() == ".git" {
-			err := scanGit(r, query, filepath.Dir(path)+"/")
-			if err != nil {
-				r.PrintText(fmt.Sprintf("scan failed for git repository, %s: %v\n", path, err))
-				// Not fatal, so don't return and continue scanning other files
-			}
-			return filepath.SkipDir
+		externalAccessors.LicenseMatcher = &licensematcher.DepsDevLicenseMatcher{
+			Client: depsDevAPIClient,
 		}
+	}
 
-		if !info.IsDir() {
-			if parser, _ := lockfile.FindParser(path, ""); parser != nil {
-				err := scanLockfile(r, query, path)
-				if err != nil {
-					r.PrintError(fmt.Sprintf("Attempted to scan lockfile but failed: %s\n", path))
-				}
-			}
-			// No need to check for error
-			// If scan fails, it means it isn't a valid SBOM file,
-			// so just move onto the next file
-			_ = scanSBOMFile(r, query, path)
+	// --- Base Image Matcher ---
+	if actions.Image != "" {
+		externalAccessors.BaseImageMatcher = &baseimagematcher.DepsDevBaseImageMatcher{
+			HTTPClient: *http.DefaultClient,
+			Config:     baseimagematcher.DefaultConfig(),
+			Reporter:   r,
 		}
+	}
 
-		if !root && !recursive && info.IsDir() {
-			return filepath.SkipDir
-		}
-		root = false
+	// --- OSV.dev Client ---
+	// We create a separate client from VulnMatcher to keep things clean.
+	externalAccessors.OSVDevClient = osvdev.DefaultClient()
 
-		return nil
+	// --- No Transitive Scanning ---
+	if actions.TransitiveScanningActions.Disabled {
+		return externalAccessors, nil
+	}
+
+	// --- Transitive Scanning Clients ---
+	externalAccessors.MavenRegistryAPIClient, err = datasource.NewMavenRegistryAPIClient(datasource.MavenRegistry{
+		URL:             actions.TransitiveScanningActions.MavenRegistry,
+		ReleasesEnabled: true,
 	})
-}
-
-// scanLockfile will load, identify, and parse the lockfile path passed in, and add the dependencies specified
-// within to `query`
-func scanLockfile(r *output.Reporter, query *osv.BatchedQuery, path string) error {
-	parsedLockfile, err := lockfile.Parse(path, "")
-	if err != nil {
-		return err
-	}
-	r.PrintText(fmt.Sprintf("Scanned %s file and found %d packages\n", path, len(parsedLockfile.Packages)))
-
-	for _, pkgDetail := range parsedLockfile.Packages {
-		pkgDetailQuery := osv.MakePkgRequest(pkgDetail)
-		pkgDetailQuery.Source = models.SourceInfo{
-			Path: path,
-			Type: "lockfile",
-		}
-		query.Queries = append(query.Queries, pkgDetailQuery)
-	}
-	return nil
-}
-
-// scanSBOMFile will load, identify, and parse the SBOM path passed in, and add the dependencies specified
-// within to `query`
-func scanSBOMFile(r *output.Reporter, query *osv.BatchedQuery, path string) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	for _, provider := range sbom.Providers {
-		if provider.Name() == "SPDX" &&
-			!strings.Contains(strings.ToLower(filepath.Base(path)), ".spdx") {
-			// All spdx files should have the .spdx in the filename, even if
-			// it's not the extension:  https://spdx.github.io/spdx-spec/v2.3/conformance/
-			// Skip if this isn't the case to avoid panics
-			continue
-		}
-		err := provider.GetPackages(file, func(id sbom.Identifier) error {
-			purlQuery := osv.MakePURLRequest(id.PURL)
-			purlQuery.Source = models.SourceInfo{
-				Path: path,
-				Type: "sbom",
-			}
-			query.Queries = append(query.Queries, purlQuery)
-			return nil
-		})
-		if err == nil {
-			// Found the right format.
-			r.PrintText(fmt.Sprintf("Scanned %s SBOM\n", provider.Name()))
-			return nil
-		}
-
-		if errors.Is(err, sbom.InvalidFormat) {
-			continue
-		}
-
-		return err
-	}
-
-	return nil
-}
-
-func getCommitSHA(repoDir string) (string, error) {
-	cmd := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD")
-	var out bytes.Buffer
-	cmd.Stdout = &out
-
-	err := cmd.Run()
 
 	if err != nil {
-		if exiterr, ok := err.(*exec.ExitError); ok && exiterr.ExitCode() == 128 {
-			return "", fmt.Errorf("Failed to get commit hash, no commits exist? %w", exiterr)
-		} else {
-			return "", fmt.Errorf("failed to get commit hash: %w", err)
-		}
+		return ExternalAccessors{}, err
 	}
 
-	return strings.TrimSpace(out.String()), nil
-}
-
-// Scan git repository. Expects repoDir to end with /
-func scanGit(r *output.Reporter, query *osv.BatchedQuery, repoDir string) error {
-	commit, err := getCommitSHA(repoDir)
-	if err != nil {
-		return err
+	if !actions.TransitiveScanningActions.NativeDataSource {
+		externalAccessors.DependencyClients[osvschema.EcosystemMaven], err = resolution.NewDepsDevClient(depsdev.DepsdevAPI, "osv-scanner_scan/"+version.OSVVersion)
+	} else {
+		externalAccessors.DependencyClients[osvschema.EcosystemMaven], err = resolution.NewMavenRegistryClient(actions.TransitiveScanningActions.MavenRegistry)
 	}
-	r.PrintText(fmt.Sprintf("Scanning %s at commit %s\n", repoDir, commit))
-
-	return scanGitCommit(r, query, commit, repoDir)
-}
-
-func scanGitCommit(r *output.Reporter, query *osv.BatchedQuery, commit string, source string) error {
-	gitQuery := osv.MakeCommitRequest(commit)
-	gitQuery.Source = models.SourceInfo{
-		Path: source,
-		Type: "git",
-	}
-	query.Queries = append(query.Queries, gitQuery)
-	return nil
-}
-
-func scanDebianDocker(r *output.Reporter, query *osv.BatchedQuery, dockerImageName string) error {
-	cmd := exec.Command("docker", "run", "--rm", "--entrypoint", "/usr/bin/dpkg-query", dockerImageName, "-f", "${Package}###${Version}\\n", "-W")
-	stdout, err := cmd.StdoutPipe()
 
 	if err != nil {
-		r.PrintError(fmt.Sprintf("Failed to get stdout: %s\n", err))
-		return err
+		return ExternalAccessors{}, err
 	}
-	err = cmd.Start()
-	if err != nil {
-		r.PrintError(fmt.Sprintf("Failed to start docker image: %s\n", err))
-		return err
-	}
-	defer cmd.Wait()
-	if err != nil {
-		r.PrintError(fmt.Sprintf("Failed to run docker: %s\n", err))
-		return err
-	}
-	scanner := bufio.NewScanner(stdout)
-	packages := 0
-	for scanner.Scan() {
-		text := scanner.Text()
-		text = strings.TrimSpace(text)
-		if len(text) == 0 {
-			continue
-		}
-		splitText := strings.Split(text, "###")
-		if len(splitText) != 2 {
-			r.PrintError(fmt.Sprintf("Unexpected output from Debian container: \n\n%s\n", text))
-			return fmt.Errorf("unexpected output from Debian container: \n\n%s", text)
-		}
-		pkgDetailsQuery := osv.MakePkgRequest(lockfile.PackageDetails{
-			Name:    splitText[0],
-			Version: splitText[1],
-			// TODO(rexpan): Get and specify exact debian release version
-			Ecosystem: "Debian",
-		})
-		pkgDetailsQuery.Source = models.SourceInfo{
-			Path: dockerImageName,
-			Type: "docker",
-		}
-		query.Queries = append(query.Queries, pkgDetailsQuery)
-		packages += 1
-	}
-	r.PrintText(fmt.Sprintf("Scanned docker image with %d packages\n", packages))
 
-	return nil
+	return externalAccessors, nil
 }
 
-// Filters response according to config, returns number of responses removed
-func filterResponse(r *output.Reporter, query osv.BatchedQuery, resp *osv.BatchedResponse, configManager *config.ConfigManager) int {
-	hiddenVulns := map[string]config.IgnoreEntry{}
-
-	for i, result := range resp.Results {
-		var filteredVulns []osv.MinimalVulnerability
-		configToUse := configManager.Get(r, query.Queries[i].Source.Path)
-		for _, vuln := range result.Vulns {
-			ignore, ignoreLine := configToUse.ShouldIgnore(vuln.ID)
-			if ignore {
-				hiddenVulns[vuln.ID] = ignoreLine
-			} else {
-				filteredVulns = append(filteredVulns, vuln)
-			}
-		}
-		resp.Results[i].Vulns = filteredVulns
-	}
-
-	for id, ignoreLine := range hiddenVulns {
-		r.PrintText(fmt.Sprintf("%s has been filtered out because: %s\n", id, ignoreLine.Reason))
-	}
-
-	return len(hiddenVulns)
-}
-
-// Perform osv scanner action, with optional reporter to output information
-func DoScan(actions ScannerActions, r *output.Reporter) (models.VulnerabilityResults, error) {
+// DoScan performs the osv scanner action, with optional reporter to output information
+func DoScan(actions ScannerActions, r reporter.Reporter) (models.VulnerabilityResults, error) {
 	if r == nil {
-		r = output.NewVoidReporter()
+		r = &reporter.VoidReporter{}
 	}
 
-	configManager := config.ConfigManager{
-		DefaultConfig: config.Config{},
-		ConfigMap:     make(map[string]config.Config),
+	// --- Sanity check flags ----
+	// TODO(v2): Move the logic of the offline flag changing other flags into here from the main.go/scan.go
+	if actions.CompareOffline {
+		if len(actions.ScanLicensesAllowlist) > 0 || actions.ScanLicensesSummary {
+			return models.VulnerabilityResults{}, errors.New("cannot retrieve licenses locally")
+		}
 	}
 
-	var query osv.BatchedQuery
+	if !actions.CompareOffline && actions.DownloadDatabases {
+		return models.VulnerabilityResults{}, errors.New("databases can only be downloaded when running in offline mode")
+	}
+
+	scanResult := results.ScanResults{
+		ConfigManager: config.Manager{
+			DefaultConfig: config.Config{},
+			ConfigMap:     make(map[string]config.Config),
+		},
+	}
+
+	// --- Setup Config ---
+	if actions.ConfigOverridePath != "" {
+		err := scanResult.ConfigManager.UseOverride(r, actions.ConfigOverridePath)
+		if err != nil {
+			r.Errorf("Failed to read config file: %s\n", err)
+			return models.VulnerabilityResults{}, err
+		}
+	}
+
+	// --- Setup Accessors/Clients ---
+	accessors, err := initializeExternalAccessors(r, actions)
+	if err != nil {
+		return models.VulnerabilityResults{}, fmt.Errorf("failed to initialize accessors: %w", err)
+	}
+
+	// ----- Perform Scanning -----
+	packages, err := scan(r, accessors, actions)
+	if err != nil {
+		return models.VulnerabilityResults{}, err
+	}
+
+	scanResult.PackageScanResults = packages
+
+	// ----- Filtering -----
+	filterUnscannablePackages(r, &scanResult)
+	filterIgnoredPackages(r, &scanResult)
+
+	// ----- Custom Overrides -----
+	overrideGoVersion(r, &scanResult)
+
+	// --- Make Vulnerability Requests ---
+	if accessors.VulnMatcher != nil {
+		err = makeVulnRequestWithMatcher(r, scanResult.PackageScanResults, accessors.VulnMatcher)
+		if err != nil {
+			return models.VulnerabilityResults{}, err
+		}
+	}
+
+	// --- Make License Requests ---
+	if accessors.LicenseMatcher != nil {
+		err = accessors.LicenseMatcher.MatchLicenses(context.Background(), scanResult.PackageScanResults)
+		if err != nil {
+			return models.VulnerabilityResults{}, err
+		}
+	}
+
+	results := buildVulnerabilityResults(r, actions, &scanResult)
+
+	filtered := filterResults(r, &results, &scanResult.ConfigManager, actions.ShowAllPackages)
+	if filtered > 0 {
+		r.Infof(
+			"Filtered %d %s from output\n",
+			filtered,
+			output.Form(filtered, "vulnerability", "vulnerabilities"),
+		)
+	}
+
+	return results, determineReturnErr(results)
+}
+
+func DoContainerScan(actions ScannerActions, r reporter.Reporter) (models.VulnerabilityResults, error) {
+	if r == nil {
+		r = &reporter.VoidReporter{}
+	}
+
+	scanResult := results.ScanResults{
+		ConfigManager: config.Manager{
+			DefaultConfig: config.Config{},
+			ConfigMap:     make(map[string]config.Config),
+		},
+	}
 
 	if actions.ConfigOverridePath != "" {
-		err := configManager.UseOverride(actions.ConfigOverridePath)
+		err := scanResult.ConfigManager.UseOverride(r, actions.ConfigOverridePath)
 		if err != nil {
-			r.PrintError(fmt.Sprintf("Failed to read config file: %s\n", err))
+			r.Errorf("Failed to read config file: %s\n", err)
 			return models.VulnerabilityResults{}, err
 		}
 	}
 
-	for _, container := range actions.DockerContainerNames {
-		// TODO: Automatically figure out what docker base image
-		// and scan appropriately.
-		scanDebianDocker(r, &query, container)
-	}
-
-	for _, lockfileElem := range actions.LockfilePaths {
-		lockfileElem, err := filepath.Abs(lockfileElem)
-		if err != nil {
-			r.PrintError(fmt.Sprintf("Failed to resolved path with error %s\n", err))
-			return models.VulnerabilityResults{}, err
-		}
-		err = scanLockfile(r, &query, lockfileElem)
-		if err != nil {
-			return models.VulnerabilityResults{}, err
-		}
-	}
-
-	for _, sbomElem := range actions.SBOMPaths {
-		sbomElem, err := filepath.Abs(sbomElem)
-		if err != nil {
-			return models.VulnerabilityResults{}, fmt.Errorf("failed to resolved path with error %s\n", err)
-		}
-		err = scanSBOMFile(r, &query, sbomElem)
-		if err != nil {
-			return models.VulnerabilityResults{}, err
-		}
-	}
-
-	for _, commit := range actions.GitCommits {
-		err := scanGitCommit(r, &query, commit, "HASH")
-		if err != nil {
-			return models.VulnerabilityResults{}, err
-		}
-	}
-
-	for _, dir := range actions.DirectoryPaths {
-		r.PrintText(fmt.Sprintf("Scanning dir %s\n", dir))
-		err := scanDir(r, &query, dir, actions.SkipGit, actions.Recursive)
-		if err != nil {
-			return models.VulnerabilityResults{}, err
-		}
-	}
-
-	if len(query.Queries) == 0 {
-		return models.VulnerabilityResults{}, NoPackagesFoundErr
-	}
-
-	resp, err := osv.MakeRequest(query)
+	// --- Setup Accessors/Clients ---
+	accessors, err := initializeExternalAccessors(r, actions)
 	if err != nil {
-		return models.VulnerabilityResults{}, fmt.Errorf("scan failed %v", err)
+		return models.VulnerabilityResults{}, fmt.Errorf("failed to initialize accessors: %w", err)
 	}
 
-	filtered := filterResponse(r, query, resp, &configManager)
+	// --- Initialize Image To Scan ---'
+
+	var img *image.Image
+	if actions.IsImageArchive {
+		r.Infof("Scanning local image tarball %q\n", actions.Image)
+		img, err = image.FromTarball(actions.Image, image.DefaultConfig())
+	} else if actions.Image != "" {
+		path, exportErr := imagehelpers.ExportDockerImage(r, actions.Image)
+		if exportErr != nil {
+			return models.VulnerabilityResults{}, exportErr
+		}
+		defer os.Remove(path)
+
+		img, err = image.FromTarball(path, image.DefaultConfig())
+		r.Infof("Scanning image %q\n", actions.Image)
+	}
+	if err != nil {
+		return models.VulnerabilityResults{}, err
+	}
+
+	defer func() {
+		err := img.CleanUp()
+		if err != nil {
+			r.Errorf("Failed to clean up image: %s\n", err)
+		}
+	}()
+
+	// --- Do Scalibr Scan ---
+	scanner := scalibr.New()
+	scalibrSR, err := scanner.ScanContainer(context.Background(), img, &scalibr.ScanConfig{
+		FilesystemExtractors: scanners.BuildArtifactExtractors(),
+	})
+	if err != nil {
+		return models.VulnerabilityResults{}, fmt.Errorf("failed to scan container image: %w", err)
+	}
+
+	if len(scalibrSR.Inventories) == 0 {
+		return models.VulnerabilityResults{}, ErrNoPackagesFound
+	}
+
+	// --- Save Scalibr Scan Results ---
+	scanResult.PackageScanResults = make([]imodels.PackageScanResult, len(scalibrSR.Inventories))
+	for i, inv := range scalibrSR.Inventories {
+		scanResult.PackageScanResults[i].PackageInfo = imodels.FromInventory(inv)
+		scanResult.PackageScanResults[i].LayerDetails = inv.LayerDetails
+	}
+
+	// --- Fill Image Metadata ---
+	scanResult.ImageMetadata, err = imagehelpers.BuildImageMetadata(img, accessors.BaseImageMatcher)
+	if err != nil { // Not getting image metadata is not fatal
+		r.Errorf("Failed to fully get image metadata: %v", err)
+	}
+
+	// ----- Filtering -----
+	filterUnscannablePackages(r, &scanResult)
+
+	filterNonContainerRelevantPackages(r, &scanResult)
+
+	// --- Make Vulnerability Requests ---
+	if accessors.VulnMatcher != nil {
+		err = makeVulnRequestWithMatcher(r, scanResult.PackageScanResults, accessors.VulnMatcher)
+		if err != nil {
+			return models.VulnerabilityResults{}, err
+		}
+	}
+
+	// --- Make License Requests ---
+	if accessors.LicenseMatcher != nil {
+		err = accessors.LicenseMatcher.MatchLicenses(context.Background(), scanResult.PackageScanResults)
+		if err != nil {
+			return models.VulnerabilityResults{}, err
+		}
+	}
+
+	// TODO: This is a set of heuristics,
+	//    - Assume that packages under usr/ might be a OS package depending on ecosystem
+	//    - Assume python packages under dist-packages is a OS package
+	// Replace this with an actual implementation in OSV-Scalibr (potentially via full filesystem accountability).
+	for _, psr := range scanResult.PackageScanResults {
+		if (strings.HasPrefix(psr.PackageInfo.Location(), "usr/") && psr.PackageInfo.Ecosystem().Ecosystem == osvschema.EcosystemGo) ||
+			strings.Contains(psr.PackageInfo.Location(), "dist-packages/") && psr.PackageInfo.Ecosystem().Ecosystem == osvschema.EcosystemPyPI {
+			psr.PackageInfo.Annotations = append(psr.PackageInfo.Annotations, extractor.InsideOSPackage)
+		}
+	}
+
+	results := buildVulnerabilityResults(r, actions, &scanResult)
+
+	filtered := filterResults(r, &results, &scanResult.ConfigManager, actions.ShowAllPackages)
 	if filtered > 0 {
-		r.PrintText(fmt.Sprintf("Filtered %d vulnerabilities from output\n", filtered))
+		r.Infof(
+			"Filtered %d %s from output\n",
+			filtered,
+			output.Form(filtered, "vulnerability", "vulnerabilities"),
+		)
 	}
 
-	hydratedResp, err := osv.Hydrate(resp)
+	return results, determineReturnErr(results)
+}
+
+// determineReturnErr determines whether we found a "vulnerability" or not,
+// and therefore whether we should return a ErrVulnerabilityFound error.
+func determineReturnErr(results models.VulnerabilityResults) error {
+	if len(results.Results) > 0 {
+		var vuln bool
+		onlyUncalledVuln := true
+		var licenseViolation bool
+		for _, vf := range results.Flatten() {
+			if vf.Vulnerability.ID != "" {
+				vuln = true
+				if vf.GroupInfo.IsCalled() {
+					onlyUncalledVuln = false
+				}
+			}
+			if len(vf.LicenseViolations) > 0 {
+				licenseViolation = true
+			}
+		}
+		onlyUncalledVuln = onlyUncalledVuln && vuln
+
+		if (!vuln || onlyUncalledVuln) && !licenseViolation {
+			// There is no error.
+			return nil
+		}
+
+		return ErrVulnerabilitiesFound
+	}
+
+	return nil
+}
+
+// TODO(V2): Add context
+func makeVulnRequestWithMatcher(
+	r reporter.Reporter,
+	packages []imodels.PackageScanResult,
+	matcher clientinterfaces.VulnerabilityMatcher) error {
+	invs := make([]*extractor.Inventory, 0, len(packages))
+	for _, pkgs := range packages {
+		invs = append(invs, pkgs.PackageInfo.Inventory)
+	}
+
+	res, err := matcher.MatchVulnerabilities(context.Background(), invs)
 	if err != nil {
-		return models.VulnerabilityResults{}, fmt.Errorf("failed to hydrate OSV response: %v", err)
+		r.Errorf("error when retrieving vulns: %v", err)
+		if res == nil {
+			return err
+		}
 	}
 
-	vulnerabilityResults := groupResponseBySource(r, query, hydratedResp)
-	// if vulnerability exists it should return error
-	if len(vulnerabilityResults.Results) > 0 {
-		return vulnerabilityResults, VulnerabilitiesFoundErr
+	for i, vulns := range res {
+		packages[i].Vulnerabilities = vulns
 	}
 
-	return vulnerabilityResults, nil
+	return nil
+}
+
+// Overrides Go version using osv-scanner.toml
+func overrideGoVersion(r reporter.Reporter, scanResults *results.ScanResults) {
+	for i, psr := range scanResults.PackageScanResults {
+		pkg := psr.PackageInfo
+		if pkg.Name() == "stdlib" && pkg.Ecosystem().Ecosystem == osvschema.EcosystemGo {
+			configToUse := scanResults.ConfigManager.Get(r, pkg.Location())
+			if configToUse.GoVersionOverride != "" {
+				scanResults.PackageScanResults[i].PackageInfo.Inventory.Version = configToUse.GoVersionOverride
+			}
+
+			continue
+		}
+	}
 }

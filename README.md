@@ -1,322 +1,155 @@
-# OSV-Scanner
+<picture>
+    <source srcset="/docs/images/osv-scanner-full-logo-darkmode.svg"  media="(prefers-color-scheme: dark)">
+    <img src="/docs/images/osv-scanner-full-logo-lightmode.svg">
+</picture>
 
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/google/osv-scanner/badge)](https://api.securityscorecards.dev/projects/github.com/google/osv-scanner)
+---
+
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/google/osv-scanner/badge)](https://scorecard.dev/viewer/?uri=github.com/google/osv-scanner)
+[![Go Report Card](https://goreportcard.com/badge/github.com/google/osv-scanner)](https://goreportcard.com/report/github.com/google/osv-scanner)
+[![codecov](https://codecov.io/gh/google/osv-scanner/graph/badge.svg?token=C8IDVX9LP5)](https://codecov.io/gh/google/osv-scanner)
+[![SLSA 3](https://slsa.dev/images/gh-badge-level3.svg)](https://slsa.dev)
+[![GitHub Release](https://img.shields.io/github/v/release/google/osv-scanner)](https://github.com/google/osv-scanner/releases)
 
 Use OSV-Scanner to find existing vulnerabilities affecting your project's dependencies.
+OSV-Scanner provides an officially supported frontend to the [OSV database](https://osv.dev/) and CLI interface to [OSV-Scalibr](https://github.com/google/osv-scalibr) that connects a project’s list of dependencies with the vulnerabilities that affect them.
 
-OSV-Scanner provides an officially supported frontend to the [OSV database](https://osv.dev/) that connects a project’s list of dependencies with the vulnerabilities that affect them. Since the OSV.dev database is open source and distributed, it has several benefits in comparison with closed source advisory databases and scanners:
+OSV-Scanner supports a wide range of project types, package managers and features, including but not limited to:
 
-- Each advisory comes from an open and authoritative source (e.g. the [RustSec Advisory Database](https://github.com/rustsec/advisory-db))
-- Anyone can suggest improvements to advisories, resulting in a very high quality database
+- **Languages:** C/C++, Dart, Elixir, Go, Java, Javascript, PHP, Python, R, Ruby, Rust.
+- **Package Managers:** npm, pip, yarn, maven, go modules, cargo, gem, composer, nuget and others.
+- **Operating Systems:** Detects vulnerabilities in OS packages on Linux systems.
+- **Containers:** Scans container images for vulnerabilities in their base images and included packages.
+- **Guided Remediation:** Provides recommendations for package version upgrades based on criteria such as dependency depth, minimum severity, fix strategy, and return on investment.
+
+OSV-Scanner uses the extensible [OSV-Scalibr](https://github.com/google/osv-scalibr) library under the hood to provide this functionality. If a language or package manager is not supported currently, please file a [feature request.](https://github.com/google/osv-scanner/issues)
+
+#### Underlying database
+
+The underlying database, [OSV.dev](https://osv.dev/) has several benefits in comparison with closed source advisory databases and scanners:
+
+- Covering most open source language and OS ecosystems (including [Git](https://osv.dev/list?q=&ecosystem=GIT)), it’s comprehensive.
+- Each advisory comes from an open and authoritative source (e.g. [GitHub Security Advisories](https://github.com/github/advisory-database), [RustSec Advisory Database](https://github.com/rustsec/advisory-db), [Ubuntu security notices](https://github.com/canonical/ubuntu-security-notices/tree/main/osv))
+- Anyone can suggest improvements to advisories, resulting in a very high quality database.
 - The OSV format unambiguously stores information about affected versions in a machine-readable format that precisely maps onto a developer’s list of packages
 
-The above all results in fewer, more actionable vulnerability notifications, which reduces the time needed to resolve them. Check out our [announcement blog post] for more details!
+The above all results in accurate and actionable vulnerability notifications, which reduces the time needed to resolve them. Check out [OSV.dev](https://osv.dev/) for more details!
 
-[announcement blog post]: https://security.googleblog.com/2022/12/announcing-osv-scanner-vulnerability.html
+## Basic installation
 
-## Table of Contents
+To install OSV-Scanner, please refer to the [installation section](https://google.github.io/osv-scanner/installation) of our documentation. OSV-Scanner releases can be found on the [releases page](https://github.com/google/osv-scanner/releases) of the GitHub repository. The recommended method is to download a prebuilt binary for your platform. Alternatively, you can use
+`go install github.com/google/osv-scanner/v2/cmd/osv-scanner@latest` to build it from source.
 
-- [OSV-Scanner](#osv-scanner)
-  - [Table of Contents](#table-of-contents)
-  - [Installing](#installing)
-    - [Package Managers](#package-managers)
-    - [Install from source](#install-from-source)
-    - [Build from source](#build-from-source)
-    - [SemVer Adherence](#semver-adherence)
-  - [Usage](#usage)
-    - [Scan a directory](#scan-a-directory)
-    - [Input an SBOM](#input-an-sbom)
-    - [Input a lockfile](#input-a-lockfile)
-    - [Scanning a Debian based docker image packages (preview)](#scanning-a-debian-based-docker-image-packages-preview)
-    - [Running in a Docker Container](#running-in-a-docker-container)
-  - [Configure OSV-Scanner](#configure-osv-scanner)
-    - [Ignore vulnerabilities by ID](#ignore-vulnerabilities-by-id)
-  - [JSON output](#json-output)
-    - [Output Format](#output-format)
-  - [Contribute](#contribute)
-    - [Report Problems](#report-problems)
-    - [Contributing code to `osv-scanner`](#contributing-code-to-osv-scanner)
-  - [Stargazers over time](#stargazers-over-time)
+## Key Features
 
-## Installing
+For more information, please read our [detailed documentation](https://google.github.io/osv-scanner) to learn how to use OSV-Scanner. For detailed information about each feature, click their titles in this README.
 
-You may download the [SLSA3](https://slsa.dev) compliant binaries for Linux, macOS, and Windows from our [releases page](https://github.com/google/osv-scanner/releases).
+Please note: These are the instructions for the latest OSV-Scanner V2 beta. If you are using V1, checkout the V1 [README](https://github.com/google/osv-scanner-v1) and [documentation](https://google.github.io/osv-scanner-v1/) instead.
 
-### Package Managers
-
-[![Packaging status](https://repology.org/badge/vertical-allrepos/osv-scanner.svg)](https://repology.org/project/osv-scanner/versions)
-
-If you're a [**Windows Scoop**](https://scoop.sh) user, then you can install osv-scanner from the [official bucket](https://github.com/ScoopInstaller/Main/blob/master/bucket/osv-scanner.json):
-
-```console
-scoop install osv-scanner
-```
-
-If you're a [Homebrew](https://brew.sh/) user, you can install [osv-scanner](https://formulae.brew.sh/formula/osv-scanner) via:
-
-```console
-brew install osv-scanner
-```
-
-If you're a Arch Linux User, you can install osv-scanner from the official repo:
-```
-pacman -S osv-scanner
-```
-
-### Install from source
-
-Alternatively, you can install this from source by running:
-
-```console
-go install github.com/google/osv-scanner/cmd/osv-scanner@v1
-```
-
-This requires Go 1.18+ to be installed.
-
-### Build from source
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) file.
-
-### SemVer Adherence
-
-All releases on the same Major version will be guaranteed to have backward compatible JSON output and CLI arguments.
-
-## Usage
-
-OSV-Scanner collects a list of dependencies and versions that are used in your project, before matching this list against the OSV database via the [OSV.dev API](https://osv.dev#use-the-api). To build the list of dependencies, you can point OSV-Scanner at your project directory, or manually pass in the path to individual manifest files.
-
-### Scan a directory
-
-Walks through a list of directories to find:
-
-- Lockfiles
-- SBOMs
-- git directories for the latest commit hash
-
-which is used to build the list of dependencies to be matched against OSV vulnerabilities.
-
-Can be configured to recursively walk through subdirectories with the `--recursive` / `-r` flag.
-
-Searching for git commit hash is intended to work with projects that use
-git submodules or a similar mechanism where dependencies are checked out
-as real git repositories.
-
-#### Example
-
-```console
-osv-scanner -r /path/to/your/dir
-```
-
-### Input an SBOM
-
-[SPDX] and [CycloneDX] SBOMs using [Package URLs] are supported. The format is
-auto-detected based on the input file contents.
-
-[SPDX]: https://spdx.dev/
-[CycloneDX]: https://cyclonedx.org/
-[Package URLs]: https://github.com/package-url/purl-spec
-
-#### Example
-
-```console
-osv-scanner --sbom=/path/to/your/sbom.json
-```
-
-### Input a lockfile
-
-A wide range of lockfiles are supported by utilizing this [lockfile package](https://github.com/google/osv-scanner/tree/main/pkg/lockfile). This is the current list of supported lockfiles:
-
-- `buildscript-gradle.lockfile`
-- `Cargo.lock`
-- `composer.lock`
-- `Gemfile.lock`
-- `go.mod`
-- `gradle.lockfile`
-- `mix.lock`
-- `package-lock.json`
-- `packages.lock.json`
-- `Pipfile.lock`
-- `pnpm-lock.yaml`
-- `poetry.lock`
-- `pom.xml`[\*](https://github.com/google/osv-scanner/issues/35)
-- `pubspec.lock`
-- `requirements.txt`[\*](https://github.com/google/osv-scanner/issues/34)
-- `yarn.lock`
-- `/lib/apk/db/installed` (Alpine)
-
-#### Example
-
-```console
-$ osv-scanner --lockfile=/path/to/your/package-lock.json --lockfile=/path/to/another/Cargo.lock
-```
-
-### Scanning a Debian based docker image packages (preview)
-
-This tool will scrape the list of installed packages in a Debian image and query for vulnerabilities on them.
-
-Currently only Debian based docker image scanning is supported.
-
-Requires `docker` to be installed and the tool to have permission calling it.
-
-This currently does not scan the filesystem of the Docker container, and has various other limitations. Follow [this issue](https://github.com/google/osv-scanner/issues/64) for updates on container scanning!
-
-#### Example
-
-```console
-osv-scanner --docker image_name:latest
-```
-
-### Running in a Docker Container
-
-The simplest way to get the osv-scanner docker image is to pull from GitHub Container Registry:
+### [Scanning a source directory](https://google.github.io/osv-scanner/usage)
 
 ```bash
-docker pull ghcr.io/google/osv-scanner:latest
+$ osv-scanner scan source -r /path/to/your/dir
 ```
 
-Once you have the image, you can test that it works by running:
+This command will recursively scan the specified directory for any supported package files, such as `package.json`, `go.mod`, `pom.xml`, etc. and output any discovered vulnerabilities.
+
+OSV-Scanner has the option of using call analysis to determine if a vulnerable function is actually being used in the project, resulting in fewer false positives, and actionable alerts.
+
+OSV-Scanner can also detect vendored C/C++ code for vulnerability scanning. See [here](https://google.github.io/osv-scanner/usage/#cc-scanning) for details.
+
+#### Supported Lockfiles
+
+OSV-Scanner supports 11+ language ecosystems and 19+ lockfile types. To check if your ecosystem is covered, please check out our [detailed documentation](https://google.github.io/osv-scanner/supported-languages-and-lockfiles/#supported-lockfiles).
+
+### [Container Scanning](https://google.github.io/osv-scanner/usage/scan-image)
+
+OSV-Scanner also supports comprehensive, layer-aware scanning for container images to detect vulnerabilities the following operating system packages and language-specific dependencies.
+
+| Distro Support | Language Artifacts Support |
+| -------------- | -------------------------- |
+| Alpine OS      | Go                         |
+| Debian         | Java                       |
+| Ubuntu         | Node                       |
+|                | Python                     |
+
+See the [full documentation](https://google.github.io/osv-scanner/supported-languages-and-lockfiles/#supported-artifacts) for details on support.
+
+**Usage**:
 
 ```bash
-docker run -it ghcr.io/google/osv-scanner -h
+$ osv-scanner scan image my-image-name:tag
 ```
 
-Finally, to run it, mount the directory you want to scan to `/src` and pass the
-appropriate osv-scanner flags:
+![screencast of html output of container scanning](https://github.com/user-attachments/assets/8bb95366-27ec-45d1-86ed-e42890f2fb46)
+
+### [License Scanning](https://google.github.io/osv-scanner/experimental/license-scanning/) (Experimental)
+
+Check your dependencies' licenses using deps.dev data. For a summary:
 
 ```bash
-docker run -it -v ${PWD}:/src ghcr.io/google/osv-scanner -L /src/go.mod
+osv-scanner --experimental-licenses-summary path/to/repository
 ```
 
-## Configure OSV-Scanner
+To check against an allowed license list (SPDX format):
 
-To configure scanning, place an osv-scanner.toml file in the scanned file's directory. To override this osv-scanner.toml file, pass the `--config=/path/to/config.toml` flag with the path to the configuration you want to apply instead.
-
-Currently, there is only 1 option to configure:
-
-### Ignore vulnerabilities by ID
-
-To ignore a vulnerability, enter the ID under the `IgnoreVulns` key. Optionally, add an expiry date or reason.
-
-#### Example
-
-```toml
-[[IgnoredVulns]]
-id = "GO-2022-0968"
-# ignoreUntil = 2022-11-09 # Optional exception expiry date
-reason = "No ssh servers are connected to or hosted in Go lang"
-
-[[IgnoredVulns]]
-id = "GO-2022-1059"
-# ignoreUntil = 2022-11-09 # Optional exception expiry date
-reason = "No external http servers are written in Go lang."
+```bash
+osv-scanner --experimental-licenses="MIT,Apache-2.0" path/to/directory
 ```
 
-## JSON output
-By default osv-scanner outputs a human readable table. To have osv-scanner output JSON instead, pass the `--json` flag when calling osv-scanner.
+### [Offline Scanning](https://google.github.io/osv-scanner/experimental/offline-mode/) (Experimental)
 
-When using the --json flag, only the JSON output will be printed to stdout, with all other outputs being directed to stderr. So to save only the json output to file, you can redirect the output with `osv-scanner --json ... > /path/to/file.json`
+Scan your project against a local OSV database. No network connection is required after the initial database download. The database can also be manually downloaded.
 
-### Output Format
-
-```json5
-{
-  "results": [
-    {
-      "packageSource": {
-        "path": "/absolute/path/to/go.mod",
-        // One of: lockfile, sbom, git, docker
-        "type": "lockfile"
-      },
-      "packages": [
-        {
-          "package": {
-            "name": "github.com/gogo/protobuf",
-            "version": "1.3.1",
-            "ecosystem": "Go"
-          },
-          "vulnerabilities": [
-            {
-              "id": "GHSA-c3h9-896r-86jm",
-              "aliases": [
-                "CVE-2021-3121"
-              ],
-              // ... Full OSV
-            },
-            {
-              "id": "GO-2021-0053",
-              "aliases": [
-                "CVE-2021-3121",
-                "GHSA-c3h9-896r-86jm"
-              ],
-              // ... Full OSV
-            }
-          ],
-          // Grouping based on aliases, if two vulnerability share the same alias, or alias each other,
-          // they are considered the same vulnerability, and is grouped here under the id field.
-          "groups": [
-            {
-              "ids": [
-                "GHSA-c3h9-896r-86jm",
-                "GO-2021-0053"
-              ]
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "packageSource": {
-        "path": "/absolute/path/to/Cargo.lock",
-        "type": "lockfile"
-      },
-      "packages": [
-        {
-          "package": {
-            "name": "regex",
-            "version": "1.5.1",
-            "ecosystem": "crates.io"
-          },
-          "vulnerabilities": [
-            {
-              "id": "GHSA-m5pq-gvj9-9vr8",
-              "aliases": [
-                "CVE-2022-24713"
-              ],
-              // ... Full OSV
-            },
-            {
-              "id": "RUSTSEC-2022-0013",
-              "aliases": [
-                "CVE-2022-24713"
-              ],
-              // ... Full OSV
-            }
-          ],
-          "groups": [
-            {
-              "ids": [
-                "GHSA-m5pq-gvj9-9vr8",
-                "RUSTSEC-2022-0013"
-              ]
-            }
-          ]
-        }
-      ]
-    }
-  ]
-}
+```bash
+osv-scanner --experimental-offline --experimental-download-offline-databases ./path/to/your/dir
 ```
+
+### [Guided Remediation](https://google.github.io/osv-scanner/experimental/guided-remediation/) (Experimental)
+
+OSV-Scanner provides guided remediation, a feature that suggests package version upgrades based on criteria such as dependency depth, minimum severity, fix strategy, and return on investment.
+We currently support remediating vulnerabilities in the following files:
+
+| Ecosystem | File Format (Type)             | Supported Remediation Strategies                                                                                  |
+| :-------- | :----------------------------- | :---------------------------------------------------------------------------------------------------------------- |
+| npm       | `package-lock.json` (lockfile) | [`in-place`](https://google.github.io/osv-scanner/experimental/guided-remediation/#in-place-lockfile-remediation) |
+| npm       | `package.json` (manifest)      | [`relock`](https://google.github.io/osv-scanner/experimental/guided-remediation/#in-place-lockfile-remediation)   |
+| Maven     | `pom.xml` (manifest)           | [`override`](https://google.github.io/osv-scanner/experimental/guided-remediation/#override-dependency-versions)  |
+
+This is available as a headless CLI command, as well as an interactive mode.
+
+#### Example (for npm)
+
+```bash
+$ osv-scanner fix \
+    --max-depth=3 \
+    --min-severity=5 \
+    --ignore-dev  \
+    --non-interactive \
+    --strategy=in-place \
+    -L path/to/package-lock.json
+```
+
+#### Interactive mode (for npm)
+
+```bash
+$ osv-scanner fix \
+    -M path/to/package.json \
+    -L path/to/package-lock.json
+```
+
+<img src="https://google.github.io/osv-scanner/images/guided-remediation-relock-patches.png" alt="Screenshot of the interactive relock results screen with some relaxation patches selected">
 
 ## Contribute
 
 ### Report Problems
-If you have what looks like a bug, please use the [Github issue tracking system](https://github.com/google/osv-scanner/issues). Before you file an issue, please search existing issues to see if your issue is already covered.
+
+If you have what looks like a bug, please use the [GitHub issue tracking system](https://github.com/google/osv-scanner/issues). Before you file an issue, please search existing issues to see if your issue is already covered.
 
 ### Contributing code to `osv-scanner`
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for documentation on how to contribute code.
 
+## Star History
 
-## Stargazers over time
-
-[![Stargazers over time](https://starchart.cc/google/osv-scanner.svg)](https://starchart.cc/google/osv-scanner)
+[![Star History Chart](https://api.star-history.com/svg?repos=google/osv-scanner&type=Date)](https://star-history.com/#google/osv-scanner&Date)
