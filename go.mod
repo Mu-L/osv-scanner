@@ -3,26 +3,26 @@ module github.com/google/osv-scanner/v2
 go 1.24.2
 
 require (
-	deps.dev/api/v3 v3.0.0-20250417015929-cbae783c4ae0
-	deps.dev/util/maven v0.0.0-20250417015929-cbae783c4ae0
-	deps.dev/util/resolve v0.0.0-20250417015929-cbae783c4ae0
-	deps.dev/util/semver v0.0.0-20250417015929-cbae783c4ae0
+	deps.dev/api/v3 v3.0.0-20250429014815-ac0aa6a085fa
+	deps.dev/util/maven v0.0.0-20250429014815-ac0aa6a085fa
+	deps.dev/util/resolve v0.0.0-20250429014815-ac0aa6a085fa
+	deps.dev/util/semver v0.0.0-20250429014815-ac0aa6a085fa
 	github.com/BurntSushi/toml v1.5.0
 	github.com/CycloneDX/cyclonedx-go v0.9.2
 	github.com/charmbracelet/bubbles v0.21.0
-	github.com/charmbracelet/bubbletea v1.3.4
+	github.com/charmbracelet/bubbletea v1.3.5
 	github.com/charmbracelet/glamour v0.10.0
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/gkampitakis/go-snaps v0.5.11
 	github.com/go-git/go-billy/v5 v5.6.2
 	github.com/go-git/go-git/v5 v5.16.0
 	github.com/google/go-cmp v0.7.0
-	github.com/google/osv-scalibr v0.2.0
+	github.com/google/osv-scalibr v0.2.1
 	github.com/ianlancetaylor/demangle v0.0.0-20250417193237-f615e6bd150b
 	github.com/jedib0t/go-pretty/v6 v6.6.7
 	github.com/muesli/reflow v0.3.0
 	github.com/opencontainers/go-digest v1.0.0
-	github.com/ossf/osv-schema/bindings/go v0.0.0-20250409195902-e540247eebab
+	github.com/ossf/osv-schema/bindings/go v0.0.0-20250430040225-f01decf9cb13
 	github.com/owenrumney/go-sarif/v2 v2.3.3
 	github.com/package-url/packageurl-go v0.1.3
 	github.com/pandatix/go-cvss v0.6.2
@@ -33,12 +33,12 @@ require (
 	golang.org/x/net v0.39.0
 	golang.org/x/sync v0.13.0
 	golang.org/x/term v0.31.0
-	golang.org/x/vuln v1.1.3
+	golang.org/x/vuln v1.1.4
 	google.golang.org/grpc v1.72.0
 	google.golang.org/protobuf v1.36.6
 	gopkg.in/ini.v1 v1.67.0
 	gopkg.in/yaml.v3 v3.0.1
-	osv.dev/bindings/go v0.0.0-20250423004504-b8445788211b
+	osv.dev/bindings/go v0.0.0-20250430025101-4b9f3e9427de
 )
 
 require (
@@ -79,8 +79,11 @@ require (
 	github.com/dlclark/regexp2 v1.11.0 // indirect
 	github.com/docker/cli v27.1.1+incompatible // indirect
 	github.com/docker/distribution v2.8.3+incompatible // indirect
+	github.com/docker/docker v28.0.4+incompatible // indirect
 	github.com/docker/docker-credential-helpers v0.8.1 // indirect
+	github.com/docker/go-connections v0.4.0 // indirect
 	github.com/docker/go-events v0.0.0-20190806004212-e31b211e4f1c // indirect
+	github.com/docker/go-units v0.5.0 // indirect
 	github.com/edsrzf/mmap-go v1.1.0 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
@@ -112,6 +115,7 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.28 // indirect
 	github.com/microcosm-cc/bluemonday v1.0.27 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
+	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/locker v1.0.1 // indirect
 	github.com/moby/sys/mountinfo v0.6.2 // indirect
 	github.com/moby/sys/sequential v0.5.0 // indirect
